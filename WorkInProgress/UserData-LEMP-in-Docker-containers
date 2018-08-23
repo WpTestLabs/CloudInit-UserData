@@ -1,0 +1,175 @@
+#!/bin/sh
+# UserData.sh
+
+iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A INPUT -m conntrack --ctstate INVALID -j DROP
+iptables -A INPUT -i eth0 -p tcp --dport 22 -m state --state NEW,ESTABLISHED -j ACCEPT
+iptables -P INPUT DROP
+iptables -P FORWARD DROP
+
+cat >/etc/ssh/sshd_config <<EOF
+HostKey /etc/ssh/ssh_host_rsa_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
+HostKey /etc/ssh/ssh_host_ed25519_key
+SyslogFacility AUTHPRIV
+AuthorizedKeysFile .ssh/authorized_keys
+PasswordAuthentication no
+ChallengeResponseAuthentication no
+GSSAPIAuthentication yes
+GSSAPICleanupCredentials no
+UsePAM yes
+X11Forwarding no
+UsePrivilegeSeparation sandbox          # Default for new installations.
+AcceptEnv LANG LC_CTYPE LC_NUMERIC LC_TIME LC_COLLATE LC_MONETARY LC_MESSAGES
+AcceptEnv LC_PAPER LC_NAME LC_ADDRESS LC_TELEPHONE LC_MEASUREMENT
+AcceptEnv LC_IDENTIFICATION LC_ALL LANGUAGE
+AcceptEnv XMODIFIERS
+Subsystem sftp  /usr/libexec/openssh/sftp-server
+ClientAliveInterval 120
+ClientAliveCountMax 2
+EOF
+systemctl reload sshd
+
+# sestatus
+setenforce permissive
+
+yum clean all; yum update -y; yum -y install docker  epel-release && systemctl start docker
+yum -y install pwgen  # Needs epel
+yum -y install tree   # For Testing / not Production
+
+export Srv=/srv
+  mkdir -p $Srv/{bin,BldTmp,env,etc/Knz,lib,run,www} ;  # MkDir's for Well Known paths
+
+cat >$Srv/BldTmp/Stage-01.sh <<EOF
+#!/bin/sh
+#  Stage-01.sh (created from UsrData by CloudInit)
+	#. /srv/env/cfSrvRootFSH.env
+touch /srv/StartStage-01
+	#mkdir -p $Srv/bldTmp/wptl && cd $Srv/bldTmp/wptl
+	#git clone --depth 1 https://github.com/Harrison-Uhl/wptl.git
+
+mkdir -p $Srv/BldTmp/WpTestLabs && cd $Srv/BldTmp/WpTestLabs 
+	#WptlGitClone () { git clone --depth 1 https://github.com/WpTestLabs/$1.git;  }
+	# removed git -n switch xxxx
+WptlGitClone () { git clone --depth 1 git://github.com/WpTestLabs/\$1.git;  }
+WptlGitClone MariaDbDkrCtrlLib-01
+WptlGitClone MySvrStkCtrl
+WptlGitClone NginxDkrCtrlLib-01
+WptlGitClone NginxConf
+WptlGitClone Php7DkrCtrlLib-01
+EOF
+chmod +x $Srv/BldTmp/Stage-01.sh
+#sync
+docker run  --rm -v /root:/root -v $Srv:/srv  wptestlabs/svrstkctrl $Srv/BldTmp/Stage-01.sh
+#-----------------------------------------------------------------------
+#sync;
+cd $Srv/BldTmp/WpTestLabs/MySvrStkCtrl && \
+    install -pm 644 -o root -g root -t $Srv/env  cfSrvRootFSH.sh
+  ln -srf $Srv/env/cfSrvRootFSH.sh $Srv/env/cfSrvRootFSH.env && . $Srv/env/cfSrvRootFSH.env
+#QQQQ ^^^^^^^^
+
+cd $Srv/BldTmp/WpTestLabs/MariaDbDkrCtrlLib-01 
+  install -pm 640 -o root -g root -t $SrvLib cfMariaDbDkrLib.sh  iMariaDbKnHX.sh 
+  install -pm 740 -o root -g root -t $SrvBin nMariaDbKn.sh nMariaDbKnDef.sh
+  pth=$SrvLib/MariaDB/GX/;    mkdir -p $pth && \
+    install -pm 640 -o root -g root -t $pth stMariaDbSvrGX.sh standardInitDbGX.sh
+  ln -srf $SrvBin/cfKnCli.sh $SrvBin/sql
+  ln -srf $SrvBin/cfKnCli.sh $SrvBin/mdb
+
+cd $Srv/BldTmp/WpTestLabs/MySvrStkCtrl
+  install -pm 740 -o root -g root -t $Srv  my.sh myEnv.sh
+	ln -srf $Srv/my.sh $Srv/my
+  cd bin && install -pm 740 -o root -g root -t $SrvBin  cfKnCli.sh
+  cd ../lib && install -pm 640 -o root -g root -t $SrvLib cfDkrCtrlLib.sh
+
+cd $Srv/BldTmp/WpTestLabs/NginxDkrCtrlLib-01
+  install -pm 740 -o root -g root -t $SrvLib  cfNgxDkrLib.sh
+  ln -srf $SrvBin/cfKnCli.sh $SrvBin/ngx
+
+cd $Srv/BldTmp/WpTestLabs/Php7DkrCtrlLib-01
+  install -pm 740 -o root -g root -t $SrvLib  cfPhp7DkrLib.sh
+  install -pm 740 -o root -g root -t $SrvBin  nPhp7Kn.sh
+  mkdir -p /srv/www/default  $WwwDfltSwc/t  #@@@@ test for $WWW...
+	install -pm 644 -o root -g root -t $WwwDfltSwc/t  _ext.php _server.php phpinfo.php
+  ln -srf $SrvBin/cfKnCli.sh $SrvBin/php
+  ln -srf $SrvBin/cfKnCli.sh $SrvBin/php5
+  ln -srf $SrvBin/cfKnCli.sh $SrvBin/php7
+# -------------------------------------
+export NgxImg=nginx:mainline-alpine
+  export NgxUsr=root
+  export NgxGrp=root
+  mkdir -p $SrvLib/ngx/$NgxImg
+
+export PhpImg=wptestlabs/php7fpm-wpmin
+  export PhpUsr=root
+  export PhpGrp=root
+#  mkdir -p $SrvLib/php/$PhpImg
+# === Nginx ===========================================================
+cat >$Srv/BldTmp/ngx-probe.sh <<EOF
+#!/bin/sh
+#  ngx-probe.sh
+. /srv/env/cfSrvRootFSH.env
+mkdir -p $Srv/BldTmp/probe/$NgxImg/etc/nginx
+cp -pr /etc/nginx/* $Srv/BldTmp/probe/$NgxImg/etc/nginx
+
+nginx -V > $Srv/BldTmp/probe/$NgxImg/nginx-bld-conf.txt
+EOF
+chmod +x $Srv/BldTmp/ngx-probe.sh
+# -- Setup Nginx lib ------------------------------------------------
+docker run --rm -v $Srv:/srv  $NgxImg  /srv/BldTmp/ngx-probe.sh
+
+export MyLibDir=$SrvLib/ngx/$NgxImg/v1
+  mkdir -p $MyLibDir/{conf.d,upstream.d}
+cd $Srv/BldTmp/probe/$NgxImg/etc/nginx
+  install -pm 640 -o $NgxUsr -g $NgxGrp -t $MyLibDir fastcgi.conf fastcgi_params mime.types
+
+cd $Srv/BldTmp/WpTestLabs/NginxConf
+  install -pm 640 -o $NgxUsr -g $NgxGrp -t $MyLibDir  nginx.conf
+  install -pm 740 -o root -g root -t $SrvBin mkIndexHtml.sh
+  install -pm 640 -o $NgxUsr -g $NgxGrp -t $MyLibDir/conf.d  cfDefaultMin.conf
+	#xx ln -srf $WwwPrfl/All/All-ngx.inc $MyLibDir/conf.d/AllProfile.conf
+	# ??? when copied out of Srv/lib,  $destination/conf.d also gets 
+	#   a 'ln -sf $WwwPrfl/All/all-ngx.inc profile.conf 
+
+  mkdir -p $WwwPrfl/All
+  install -pm 644 -o $NgxUsr -g $NgxGrp -t $WwwPrfl/All  All-ngx.inc
+  install -pm 744 -o $NgxUsr -g $NgxGrp -t $SrvBin mkIndexHtml.sh nNgxKn.sh nNgxKnDef.sh
+cd $MyLibDir;	ln -sf ../../usr/lib/nginx/modules
+# === PHP =====================================
+cat >$Srv/BldTmp/php-probe.sh <<EOF
+#!/bin/sh
+#  php-probe.sh
+#qq . /srv/env/cfSrvRootFSH.env
+mkdir -p $SrvBldTmp/probe/$PhpImg/etc/php7
+#ls /etc/ > $SrvBldTmp/probe/$PhpImg/etc/ls.txt
+cp -pr /etc/php7/* $Srv/BldTmp/probe/$PhpImg/etc/php7
+
+#@@ php7__ -V > $Srv/BldTmp/probe/$NgxImg/nginx-bld-conf.txt
+EOF
+chmod +x $Srv/BldTmp/php-probe.sh
+docker run --rm -v $Srv:/srv  $PhpImg  $SrvBldTmp/php-probe.sh
+# vvv ==> install v0 w/ proper owner & mode !!!! @@@@@@@@@@@@@@@
+                                  mkdir -p $SrvLib/php7/$PhpImg/v0/etc/php7/
+cp -rp $SrvBldTmp/probe/$PhpImg/etc/php7/* $SrvLib/php7/$PhpImg/v0/etc/php7/
+# ---------------------------------
+/srv/my nNgxKn.sh
+/srv/my nPhp7Kn.sh
+
+mkdir -p /srv/www/default  $WwwDfltSwc  #@@@@ test for $WWW...
+#qq  $SrvBin/mkIndexHtml.sh /srv/www/default "via /srv/www/default"
+  $SrvBin/mkIndexHtml.sh $WwwDfltSwc "via WwwDfltSwc"
+
+/srv/my ngx On
+  iptables -A INPUT -i eth0 -p tcp --dport 80 -m state --state NEW,ESTABLISHED -j ACCEPT
+/srv/my php7 On
+
+/srv/my nMariaDbKn.sh
+/srv/my sql On
+
+
+cat /proc/uptime > /End-of-usrData;  uptime >> /End-of-usrData
+#git push --mirror https://github.com/Harrison-Uhl/wptl.git
+#export WptlGit=https://raw.githubusercontent.com/WpTestLabs/MySvrStkCtrl/master
+#curl -fSL $WptlGit/cfSrvRootFSH -o $Srv/env/cfSrvRootFSH.env 
+# ps fax | grep mysql
